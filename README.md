@@ -1,3 +1,23 @@
+# Usage & Training Instructions
+
+SSH into GCP VM using VS Code extention (enter {first name}{last name}@{IP Address of VM} for example brendanmclaughlin@34.125.186.157)
+
+'open folder' bert-sim-cse-deployment-vm
+
+make changes and commit to github branches (as you noramlly would)
+
+to run training, use tmux so you can close your computer or even quit terminal session and it will keep running
+
+do tmux new -s {name your session} OR tmux ls to see existing sessions
+
+do Ctrl+b d to detach from session
+
+to reattach do tmux a -t {name of session}
+
+run your training command
+
+do Ctrl+b d to detach from session
+
 # CS 224N Default Final Project 2024 - Multitask BERT
 
 This is the default final project for the Stanford CS 224N class. Please refer to the project handout on the course website for detailed instructions and an overview of the codebase.
