@@ -132,16 +132,16 @@ class BertLayer(nn.Module):
         """
         # TODO: Added code here
 
-        # Apply the dense layer to the output.
+        # apply the dense layer to output
         output_transformed = dense_layer(output)
 
-        # Apply dropout to the transformed output.
+        # apply dropout to transformed output
         output_dropout = dropout(output_transformed)
 
-        # Add the dropout output to the original input (residual connection).
+        # add the dropout output to the original input (residual connection)
         output_residual = input + output_dropout
 
-        # Apply layer norm to the output.
+        # apply layer norm to the output
         output_norm = ln_layer(output_residual)
 
         return output_norm
@@ -158,21 +158,21 @@ class BertLayer(nn.Module):
         """
         # TODO: Added code here
 
-        # Mulit-head attention layer
+        # mulit-head attention layer
         attnetion_output = self.self_attention(hidden_states, attention_mask)
 
-        # Add-norm operation for multi-head attention
+        # add-norm operation for multi-head attention
         attention_output = self.add_norm(
             hidden_states, attnetion_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
 
-        # Save intermediate layer
+        # save intermediate layer
         intermediate_output = attention_output
 
-        # Feed forward layer
+        # feed forward layer
         feed_forward_output = self.interm_af(
             self.interm_dense(attention_output))
 
-        # Add-norm operation for feed forward layer
+        # add-norm operation for feed forward layer
         layer_output = self.add_norm(
             intermediate_output, feed_forward_output, self.out_dense, self.out_dropout, self.out_layer_norm)
 
@@ -193,7 +193,7 @@ class BertModel(BertPreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        # Embedding layers.
+        # embedding layers.
         self.word_embedding = nn.Embedding(
             config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.pos_embedding = nn.Embedding(
@@ -203,7 +203,7 @@ class BertModel(BertPreTrainedModel):
         self.embed_layer_norm = nn.LayerNorm(
             config.hidden_size, eps=config.layer_norm_eps)
         self.embed_dropout = nn.Dropout(config.hidden_dropout_prob)
-        # Register position_ids (1, len position emb) to buffer because it is a constant.
+        # register position_ids (1, len position emb) to buffer because it is a constant.
         position_ids = torch.arange(
             config.max_position_embeddings).unsqueeze(0)
         self.register_buffer('position_ids', position_ids)
@@ -224,15 +224,14 @@ class BertModel(BertPreTrainedModel):
 
         # TODO: Added code here
 
-        # Get word embedding from self.word_embedding into input_embeds.
+        # get word embedding from self.word_embedding into input_embeds
         inputs_embeds = self.word_embedding(input_ids)
 
-        # Use pos_ids to get position embedding from self.pos_embedding into pos_embeds.
+        # use pos_ids to get position embedding from self.pos_embedding into pos_embeds
         pos_ids = self.position_ids[:, :seq_length]
         pos_embeds = self.pos_embedding(pos_ids)
 
-        # Get token type ids. Since we are not considering token type, this embedding is
-        # just a placeholder.
+        # get token type ids
         tk_type_ids = torch.zeros(
             input_shape, dtype=torch.long, device=input_ids.device)
         tk_type_embeds = self.tk_type_embedding(tk_type_ids)
@@ -267,14 +266,14 @@ class BertModel(BertPreTrainedModel):
         input_ids: [batch_size, seq_len], seq_len is the max length of the batch
         attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
         """
-        # Get the embedding for each input token.
+        # get the embedding for each input token
         embedding_output = self.embed(input_ids=input_ids)
 
-        # Feed to a transformer (a stack of BertLayers).
+        # feed to a transformer (a stack of BertLayers)
         sequence_output = self.encode(
             embedding_output, attention_mask=attention_mask)
 
-        # Get cls token hidden state.
+        # get cls token hidden state
         first_tk = sequence_output[:, 0]
         first_tk = self.pooler_dense(first_tk)
         first_tk = self.pooler_af(first_tk)
