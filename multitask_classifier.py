@@ -94,10 +94,10 @@ class MultitaskBERT(nn.Module):
         outputs = self.bert(input_ids, attention_mask)
 
         # (maybe) get the hidden state of the [CLS] token
-        cls_embeddings = outputs.last_hidden_state[:, 0, :]
+        # cls_embeddings = outputs.last_hidden_state[:, 0, :]
 
         # get pooler output
-        pooler_output = outputs.pooler_output
+        pooler_output = outputs["pooler_output"]
 
         return pooler_output
 
@@ -266,8 +266,7 @@ def train_multitask(x):
                 optimizer.zero_grad()
                 logits = model.predict_paraphrase(
                     b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-                loss = F.binary_cross_entropy_with_logits(
-                    logits, b_labels.view(-1, 1), reduction='mean')
+                loss = F.binary_cross_entropy_with_logits(logits, b_labels.view(-1, 1).float(), reduction='mean')
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -291,6 +290,7 @@ def train_multitask(x):
                 optimizer.zero_grad()
                 logits = model.predict_similarity(
                     b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+                b_labels = b_labels.float()
                 loss = F.mse_loss(logits, b_labels.view(-1, 1),
                                   reduction='mean')
                 loss.backward()
