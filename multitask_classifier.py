@@ -212,6 +212,7 @@ def train_multitask(x):
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
 
+    # Added
     best_dev_sentiment_accuracy = 0
     best_dev_paraphrase_accuracy = 0
     best_dev_sts_corr = -1
@@ -229,7 +230,7 @@ def train_multitask(x):
         max_steps = max(len(sst_train_dataloader), len(
             para_train_dataloader), len(sts_train_dataloader))
 
-        # for each example
+        # for each batch
         for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
             # train sst
             try:
