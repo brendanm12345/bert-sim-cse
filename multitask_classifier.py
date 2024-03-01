@@ -158,7 +158,7 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def train_multitask(args):
+def train_multitask(x):
     '''Train MultitaskBERT.
 
     Currently only trains on SST dataset. The way you incorporate training examples
@@ -171,21 +171,31 @@ def train_multitask(args):
     sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
         args.sst_train, args.para_train, args.sts_train, split='train')
     sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='train')
+        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
 
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
+
     para_train_data = SentencePairDataset(para_train_data, args)
+    para_dev_data = SentencePairDataset(para_train_data, args)
+
     sts_train_data = SentencePairDataset(sts_train_data, args)
+    sts_dev_data = SentencePairDataset(sts_train_data, args)
 
     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
                                       collate_fn=sst_train_data.collate_fn)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sst_dev_data.collate_fn)
+
     para_train_dataloader = DataLoader(
         para_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
+    para_dev_dataloader = DataLoader(
+        para_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
+
     sts_train_dataloader = DataLoader(
         sts_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
+    sts_dev_dataloader = DataLoader(
+        sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -201,9 +211,12 @@ def train_multitask(args):
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc = 0
 
-    # Run for the specified number of epochs.
+    best_dev_sentiment_accuracy = 0
+    best_dev_paraphrase_accuracy = 0
+    best_dev_sts_corr = -1
+
+    # for each epoch
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
@@ -216,6 +229,7 @@ def train_multitask(args):
         max_steps = max(len(sst_train_dataloader), len(
             para_train_dataloader), len(sts_train_dataloader))
 
+        # for each example
         for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
             # train sst
             try:
@@ -228,7 +242,7 @@ def train_multitask(args):
                 optimizer.zero_grad()
                 logits = model.predict_sentiment(b_ids, b_mask)
                 loss = F.cross_entropy(
-                    logits, b_labels.view(-1), reduction='sum') / args.batch_size
+                    logits, b_labels.view(-1), reduction='mean')
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -253,7 +267,7 @@ def train_multitask(args):
                 logits = model.predict_paraphrase(
                     b_ids_1, b_mask_1, b_ids_2, b_mask_2)
                 loss = F.binary_cross_entropy_with_logits(
-                    logits, b_labels.view(-1, 1), reduction='sum') / args.batch_size
+                    logits, b_labels.view(-1, 1), reduction='mean')
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -278,7 +292,7 @@ def train_multitask(args):
                 logits = model.predict_similarity(
                     b_ids_1, b_mask_1, b_ids_2, b_mask_2)
                 loss = F.mse_loss(logits, b_labels.view(-1, 1),
-                                  reduction='sum') / args.batch_size
+                                  reduction='mean')
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -288,16 +302,34 @@ def train_multitask(args):
 
         train_loss = train_loss / (num_batches)
 
-        train_acc, train_f1, * \
-            _ = model_eval_sst(sst_train_dataloader, model, device)
-        dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
+        dev_sentiment_accuracy, dev_sst_y_pred, dev_sst_sent_ids, \
+            dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
+            dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
+                                                                                  para_dev_dataloader,
+                                                                                  sts_dev_dataloader, model, device)
 
-        if dev_acc > best_dev_acc:
-            best_dev_acc = dev_acc
+        improvement = False
+        if dev_sentiment_accuracy > best_dev_sentiment_accuracy:
+            best_dev_sentiment_accuracy = dev_sentiment_accuracy
+            improvement = True
+        if dev_paraphrase_accuracy > best_dev_paraphrase_accuracy:
+            best_dev_paraphrase_accuracy = dev_paraphrase_accuracy
+            improvement = True
+        if dev_sts_corr > best_dev_sts_corr:
+            best_dev_sts_corr = dev_sts_corr
+            improvement = True
+
+        if improvement:
             save_model(model, optimizer, args, config, args.filepath)
+            print(f"Improvement! Model saved at epoch {epoch}")
+            print(f"- Sentiment acc: {best_dev_sentiment_accuracy:.3f}")
+            print(f"- Paraphrase acc: {best_dev_paraphrase_accuracy:.3f}")
+            print(f"- STS corr: {best_dev_sts_corr:.3f}")
 
-        print(
-            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+        print(f"Epoch {epoch} Evalualtion:")
+        print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
+        print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
+        print(f"- STS corr: {dev_sts_corr:.3f}")
 
 
 def test_multitask(args):
