@@ -92,6 +92,24 @@ class sup_simcse():
             total_loss += pair_loss
         
         return total_loss
+# SIMSCE: Added code
+class ContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.05):
+        super(ContrastiveLoss, self).__init__()
+        self.temperature = temperature
+        self.cosine_similarity = nn.CosineSimilarity(dim=-1)
+
+    def forward(self, z1, z2):
+        # Compute cosine similarity
+        similarities = self.cosine_similarity(
+            z1.unsqueeze(1), z2.unsqueeze(0)) / self.temperature
+        # Diagonal elements are similarities between corresponding positive pairs
+        positives = similarities.diag()
+        # Negative log likelihood for positive examples being selected from all examples
+        log_prob = positives - torch.logsumexp(similarities, dim=1)
+        # Average loss over the batch
+        loss = -log_prob.mean()
+        return loss
 
 
 class MultitaskBERT(nn.Module):
@@ -112,7 +130,7 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
-        # You will want to add layers here to perform the downstream tasks.
+
         # TODO Added code here
         self.sentiment_classifier = nn.Linear(
             BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
@@ -123,22 +141,27 @@ class MultitaskBERT(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids, attention_mask):
-        'Takes a batch of sentences and produces embeddings for them.'
-        # The final BERT embedding is the hidden state of [CLS] token (the first token)
-        # Here, you can start by just returning the embeddings straight from BERT.
-        # When thinking of improvements, you can later try modifying this
-        # (e.g., by adding other layers).
-        # TODO Added code here
-        outputs = self.bert(input_ids, attention_mask)
+        # SIMCSE: Added code
+        self.simcse = config.get('simcse', False)
 
-        # (maybe) get the hidden state of the [CLS] token
-        # cls_embeddings = outputs.last_hidden_state[:, 0, :]
+    # SIMCSE: Updated this function
+    def forward(self, input_ids, attention_mask, token_type_ids=None):
+        # Process input through BERT
+        outputs = self.bert(
+            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
 
-        # get pooler output
-        pooler_output = outputs["pooler_output"]
+        if self.simcse:
+            # For SimCSE, apply dropout twice to get two embeddings for the same input
+            pooled_output = outputs.pooler_output
+            # Apply dropout first time
+            pooled_output_first = self.dropout(pooled_output)
+            # Re-apply dropout to get a second, different embedding
+            pooled_output_second = self.dropout(pooled_output)
 
-        return pooler_output
+            return pooled_output_first, pooled_output_second
+        else:
+            # Original processing
+            return outputs.pooler_output
 
     def predict_sentiment(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
@@ -197,6 +220,8 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
+# SIMCSE: we will have to update the training loop to get the sentence comparision pairs
+# and the similarity scores and the compute loss
 def train_multitask(x):
     '''Train MultitaskBERT.
 
@@ -248,6 +273,9 @@ def train_multitask(x):
     model = MultitaskBERT(config)
     model = model.to(device)
 
+    # SIMCSE: Added code
+    conrtastive_loss_fn = ContrastiveLoss()
+
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
 
@@ -259,7 +287,14 @@ def train_multitask(x):
     # for each epoch
     for epoch in range(args.epochs):
         model.train()
-        train_loss = 0
+
+        # SIMCSE: Added code
+        model.simcse = True  # Enable SimCSE mode
+
+        # SIMCSE: Added code
+        total_loss = 0
+        total_contrastive_loss = 0
+        total_task_specific = 0
         num_batches = 0
 
         sst_iter = iter(sst_train_dataloader)
@@ -270,7 +305,7 @@ def train_multitask(x):
             para_train_dataloader), len(sts_train_dataloader))
 
         # for each batch
-        for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
+        for batch in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
             # train sst
             try:
                 batch = next(sst_iter)
@@ -306,7 +341,8 @@ def train_multitask(x):
                 optimizer.zero_grad()
                 logits = model.predict_paraphrase(
                     b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-                loss = F.binary_cross_entropy_with_logits(logits, b_labels.view(-1, 1).float(), reduction='mean')
+                loss = F.binary_cross_entropy_with_logits(
+                    logits, b_labels.view(-1, 1).float(), reduction='mean')
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
