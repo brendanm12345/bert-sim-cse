@@ -21,6 +21,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
 
 from bert import BertModel
 from optimizer import AdamW
@@ -31,15 +32,14 @@ from datasets import (
     SentenceClassificationTestDataset,
     SentencePairDataset,
     SentencePairTestDataset,
-    load_multitask_data
+    load_multitask_data,
+    SimCSEDataset,
 )
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
 
 TQDM_DISABLE = False
-
-# Fix the random seed.
 
 
 def seed_everything(seed=11711):
@@ -146,6 +146,7 @@ class MultitaskBERT(nn.Module):
 
         # SIMCSE: Added code
         self.simcse = config.get('simcse', False)
+        self.contrastive_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
 
     # SIMCSE: Updated this function
     def forward(self, input_ids, attention_mask, token_type_ids=None):
@@ -187,24 +188,23 @@ def train_multitask(x):
     Currently computes and combines loss for each task during each iteration to optimzie for all three. Need to migrate to SimCSE contrastive learning.
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    # Create the data and its corresponding datasets and dataloader.
-    simcse_train_data, _ = load_multitask_data(
-        args.simcse_train, split='train')
-    simcse_dev_data, _ = load_multitask_data(args.simcse_dev, split='dev')
 
+    # Load SimCSE training and development data
+    simcse_train_data = SimCSEDataset(args.simcse_train)
+    simcse_dev_data = SimCSEDataset(args.simcse_dev)
+
+    # Create DataLoaders for SimCSE training and development data
     simcse_train_dataloader = DataLoader(
         simcse_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=simcse_train_data.collate_fn)
     simcse_dev_dataloader = DataLoader(
         simcse_dev_data, shuffle=False, batch_size=args.batch_size, collate_fn=simcse_dev_data.collate_fn)
 
-    config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': 2,  # Assuming binary classification for simplicity
-              'hidden_size': 768,
-              'data_dir': '.',
-              'option': args.option,
-              'simcse': True}
-
-    config = SimpleNamespace(**config)
+    config = SimpleNamespace(hidden_dropout_prob=args.hidden_dropout_prob,
+                             num_labels=2,  # Assuming binary classification for simplicity < this might be wrong since we want to test on same tasks
+                             hidden_size=768,
+                             data_dir='.',
+                             option=args.option,
+                             simcse=True)
 
     model = MultitaskBERT(config).to(device)
     contrastive_loss_fn = ContrastiveLoss().to(device)
@@ -227,14 +227,15 @@ def train_multitask(x):
             # Backpropagation
             optimizer.zero_grad()
             loss.backward()
+
+            # Gradient clipping
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             total_loss += loss.item()
 
         avg_loss = total_loss / len(simcse_train_dataloader)
         print(f"Epoch {epoch}: Average training loss: {avg_loss:.4f}")
-
-        # more eval stuff?
 
 
 def test_multitask(args):
