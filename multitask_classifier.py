@@ -55,6 +55,45 @@ BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
 
+class sup_simcse():
+    def __init__(self, model, optimizer, args, config):
+        self.model = model
+        self.optimizer = optimizer
+        self.args = args
+        self.config = config
+    def simplified_contrastive_loss(positive_pairs, negative_pairs, tau):
+        """
+        Compute the contrastive loss given a list of positive pairs and negative pairs.
+        For each positive pair, it computes the numerator using the anchor and its positive pair,
+        and computes the denominator by considering all the other pairs with respect to that anchor.
+        
+        Parameters:
+        - positive_pairs: A list of tuples, each containing an anchor and a positive example.
+        - negative_pairs: A list of tuples, each containing an anchor and a negative example.
+        - tau: The temperature parameter.
+        
+        Returns:
+        - A scalar value representing the total contrastive loss.
+        """
+        total_loss = 0.0
+        for anchor, positive in positive_pairs:
+            # Calculate the numerator of the softmax for the positive pair
+            positive_similarity = torch.exp(torch.dot(anchor, positive) / tau)
+            
+            # Calculate the denominator of the softmax for all negative pairs
+            negative_sum = positive_similarity  # include the positive pair in the denominator
+            for anchor_neg, negative in negative_pairs:
+                if torch.equal(anchor, anchor_neg):  # Only consider negative pairs with the same anchor
+                    negative_similarity = torch.exp(torch.dot(anchor, negative) / tau)
+                    negative_sum += negative_similarity
+            
+            # Compute the loss for the current positive pair
+            pair_loss = -torch.log(positive_similarity / negative_sum)
+            total_loss += pair_loss
+        
+        return total_loss
+
+
 class MultitaskBERT(nn.Module):
     '''
     This module should use BERT for 3 tasks:
