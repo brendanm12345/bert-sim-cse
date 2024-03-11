@@ -39,8 +39,9 @@ from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_mul
 
 TQDM_DISABLE = False
 
-
 # Fix the random seed.
+
+
 def seed_everything(seed=11711):
     random.seed(seed)
     np.random.seed(seed)
@@ -53,6 +54,65 @@ def seed_everything(seed=11711):
 
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
+
+
+def unsup_simplified_contrastive_loss(positive_pairs, tau):
+    """
+    Compute the contrastive loss given a list of positive pairs and negative pairs.
+    For each positive pair, it computes the numerator using the anchor and its positive pair,
+    and computes the denominator by considering all the other pairs with respect to that anchor.
+
+    Parameters:
+    - positive_pairs: A list of tuples, each containing an anchor and a positive example.
+    - negative_pairs: A list of tuples, each containing an anchor and a negative example.
+    - tau: The temperature parameter.
+
+    Returns:
+    - A scalar value representing the total contrastive loss.
+    """
+
+
+class ContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.05, positive_pairs=None):
+        super(ContrastiveLoss, self).__init__()
+        self.positive_pairs = positive_pairs
+        self.temperature = temperature
+        self.cosine_similarity = nn.CosineSimilarity(dim=-1)
+
+    def forward(self):
+        total_loss = 0.0
+        for anchor, positive in self.positive_pairs:
+            # Calculate the numerator of the softmax for the positive pair
+            positive_similarity = torch.exp(
+                torch.dot(anchor, positive) / self.temperature)
+
+            # Calculate the denominator of the softmax for all negative pairs
+            negative_sum = positive_similarity  # include the positive pair in the denominator
+            for i in range(len(self.positive_pairs)):
+                # negative_similarity = torch.exp(torch.dot(anchor, negative_pairs[i][1]) / tau)
+                # negative_sum += coefficient_1 * negative_similarity
+                positive_similarity = torch.exp(
+                    torch.dot(anchor, self.positive_pairs[i][1]) / self.temperature)
+                negative_sum += positive_similarity
+
+            # Compute the loss for the current positive pair
+            pair_loss = -torch.log(positive_similarity / negative_sum)
+            total_loss += pair_loss
+
+        return total_loss
+
+
+class GaussianDropout(nn.Module):
+    def __init__(self, p=0.1):
+        super(GaussianDropout, self).__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.training:
+            # Sample noise
+            noise = torch.randn_like(x) * self.p
+            return x + noise
+        return x
 
 
 class MultitaskBERT(nn.Module):
@@ -73,7 +133,7 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
-        # You will want to add layers here to perform the downstream tasks.
+
         # TODO Added code here
         self.sentiment_classifier = nn.Linear(
             BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
@@ -84,63 +144,27 @@ class MultitaskBERT(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids, attention_mask):
-        'Takes a batch of sentences and produces embeddings for them.'
-        # The final BERT embedding is the hidden state of [CLS] token (the first token)
-        # Here, you can start by just returning the embeddings straight from BERT.
-        # When thinking of improvements, you can later try modifying this
-        # (e.g., by adding other layers).
-        # TODO Added code here
-        outputs = self.bert(input_ids, attention_mask)
+        # SIMCSE: Added code
+        self.simcse = config.get('simcse', False)
 
-        # (maybe) get the hidden state of the [CLS] token
-        # cls_embeddings = outputs.last_hidden_state[:, 0, :]
+    # SIMCSE: Updated this function
+    def forward(self, input_ids, attention_mask, token_type_ids=None):
+        # Process input through BERT
+        outputs = self.bert(
+            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
 
-        # get pooler output
-        pooler_output = outputs["pooler_output"]
+        if self.simcse:
+            # For SimCSE, apply dropout twice to get two embeddings for the same input
+            pooled_output = outputs.pooler_output
+            # Apply dropout first time
+            pooled_output_first = self.dropout(pooled_output)
+            # Re-apply dropout to get a second, different embedding
+            pooled_output_second = self.dropout(pooled_output)
 
-        return pooler_output
-
-    def predict_sentiment(self, input_ids, attention_mask):
-        '''Given a batch of sentences, outputs logits for classifying sentiment.
-        There are 5 sentiment classes:
-        (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
-        Thus, your output should contain 5 logits for each sentence.
-        '''
-        # TODO Added code here
-        embeddings = self.forward(input_ids, attention_mask)
-        embeddings = self.dropout(embeddings)
-        logits = self.sentiment_classifier(embeddings)
-        return logits
-
-    def predict_paraphrase(self,
-                           input_ids_1, attention_mask_1,
-                           input_ids_2, attention_mask_2):
-        '''Given a batch of pairs of sentences, outputs a single logit for predicting whether they are paraphrases.
-        Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
-        during evaluation.
-        '''
-        # TODO Added code here
-        embeddings_1 = self.forward(input_ids_1, attention_mask_1)
-        embeddings_2 = self.forward(input_ids_2, attention_mask_2)
-        embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
-        embeddings = self.dropout(embeddings)
-        logits = self.paraphrase_classifier(embeddings)
-        return logits
-
-    def predict_similarity(self,
-                           input_ids_1, attention_mask_1,
-                           input_ids_2, attention_mask_2):
-        '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
-        Note that your output should be unnormalized (a logit).
-        '''
-        # TODO Add code here
-        embeddings_1 = self.forward(input_ids_1, attention_mask_1)
-        embeddings_2 = self.forward(input_ids_2, attention_mask_2)
-        embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
-        embeddings = self.dropout(embeddings)
-        logits = self.similarity_classifier(embeddings)
-        return logits
+            return pooled_output_first, pooled_output_second
+        else:
+            # Original processing
+            return outputs.pooler_output
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -160,178 +184,57 @@ def save_model(model, optimizer, args, config, filepath):
 
 def train_multitask(x):
     '''Train MultitaskBERT.
-
-    Currently only trains on SST dataset. The way you incorporate training examples
-    from other datasets into the training procedure is up to you. To begin, take a
-    look at test_multitask below to see how you can use the custom torch `Dataset`s
-    in datasets.py to load in examples from the Quora and SemEval datasets.
+    Currently computes and combines loss for each task during each iteration to optimzie for all three. Need to migrate to SimCSE contrastive learning.
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
-    sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
-        args.sst_train, args.para_train, args.sts_train, split='train')
-    sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
+    simcse_train_data, _ = load_multitask_data(
+        args.simcse_train, split='train')
+    simcse_dev_data, _ = load_multitask_data(args.simcse_dev, split='dev')
 
-    sst_train_data = SentenceClassificationDataset(sst_train_data, args)
-    sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
+    simcse_train_dataloader = DataLoader(
+        simcse_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=simcse_train_data.collate_fn)
+    simcse_dev_dataloader = DataLoader(
+        simcse_dev_data, shuffle=False, batch_size=args.batch_size, collate_fn=simcse_dev_data.collate_fn)
 
-    para_train_data = SentencePairDataset(para_train_data, args)
-    para_dev_data = SentencePairDataset(para_train_data, args)
-
-    sts_train_data = SentencePairDataset(sts_train_data, args)
-    sts_dev_data = SentencePairDataset(sts_train_data, args)
-
-    sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sst_train_data.collate_fn)
-    sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn)
-
-    para_train_dataloader = DataLoader(
-        para_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
-    para_dev_dataloader = DataLoader(
-        para_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
-
-    sts_train_dataloader = DataLoader(
-        sts_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
-    sts_dev_dataloader = DataLoader(
-        sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
-
-    # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': num_labels,
+              'num_labels': 2,  # Assuming binary classification for simplicity
               'hidden_size': 768,
               'data_dir': '.',
-              'option': args.option}
+              'option': args.option,
+              'simcse': True}
 
     config = SimpleNamespace(**config)
 
-    model = MultitaskBERT(config)
-    model = model.to(device)
+    model = MultitaskBERT(config).to(device)
+    contrastive_loss_fn = ContrastiveLoss().to(device)
 
-    lr = args.lr
-    optimizer = AdamW(model.parameters(), lr=lr)
+    optimizer = AdamW(model.parameters(), lr=args.lr)
 
-    # Added
-    best_dev_sentiment_accuracy = 0
-    best_dev_paraphrase_accuracy = 0
-    best_dev_sts_corr = -1
-
-    # for each epoch
     for epoch in range(args.epochs):
         model.train()
-        train_loss = 0
-        num_batches = 0
+        total_loss = 0.0
+        for batch in tqdm(simcse_train_dataloader, desc=f"Epoch {epoch}"):
+            input_ids, attention_mask = batch['input_ids'].to(
+                device), batch['attention_mask'].to(device)
 
-        sst_iter = iter(sst_train_dataloader)
-        para_iter = iter(para_train_dataloader)
-        sts_iter = iter(sts_train_dataloader)
+            # Forward pass to get embeddings. For SimCSE, we expect two sets of embeddings per input due to dropout variation.
+            embeddings1, embeddings2 = model(input_ids, attention_mask)
 
-        max_steps = max(len(sst_train_dataloader), len(
-            para_train_dataloader), len(sts_train_dataloader))
+            positive_pairs = list(zip(embeddings1, embeddings2))
+            loss = contrastive_loss_fn(positive_pairs=positive_pairs)
 
-        # for each batch
-        for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
-            # train sst
-            try:
-                batch = next(sst_iter)
-                b_ids, b_mask, b_labels = (batch['token_ids'],
-                                           batch['attention_mask'], batch['labels'])
-                b_ids = b_ids.to(device)
-                b_mask = b_mask.to(device)
-                b_labels = b_labels.to(device)
-                optimizer.zero_grad()
-                logits = model.predict_sentiment(b_ids, b_mask)
-                loss = F.cross_entropy(
-                    logits, b_labels.view(-1), reduction='mean')
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item()
-                num_batches += 1
-            except StopIteration:
-                pass
+            # Backpropagation
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-            # train para
-            try:
-                batch = next(para_iter)
-                b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
-                                                                  batch['attention_mask_1'],
-                                                                  batch['token_ids_2'],
-                                                                  batch['attention_mask_2'],
-                                                                  batch['labels'])
-                b_ids_1 = b_ids_1.to(device)
-                b_mask_1 = b_mask_1.to(device)
-                b_ids_2 = b_ids_2.to(device)
-                b_mask_2 = b_mask_2.to(device)
-                b_labels = b_labels.to(device)
-                optimizer.zero_grad()
-                logits = model.predict_paraphrase(
-                    b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-                loss = F.binary_cross_entropy_with_logits(
-                    logits, b_labels.view(-1, 1).float(), reduction='mean')
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item()
-                num_batches += 1
-            except StopIteration:
-                pass
+            total_loss += loss.item()
 
-            # train sts
-            try:
-                batch = next(sts_iter)
-                b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
-                                                                  batch['attention_mask_1'],
-                                                                  batch['token_ids_2'],
-                                                                  batch['attention_mask_2'],
-                                                                  batch['labels'])
-                b_ids_1 = b_ids_1.to(device)
-                b_mask_1 = b_mask_1.to(device)
-                b_ids_2 = b_ids_2.to(device)
-                b_mask_2 = b_mask_2.to(device)
-                b_labels = b_labels.to(device)
-                optimizer.zero_grad()
-                logits = model.predict_similarity(
-                    b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-                b_labels = b_labels.float()
-                loss = F.mse_loss(logits, b_labels.view(-1, 1),
-                                  reduction='mean')
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item()
-                num_batches += 1
-            except StopIteration:
-                pass
+        avg_loss = total_loss / len(simcse_train_dataloader)
+        print(f"Epoch {epoch}: Average training loss: {avg_loss:.4f}")
 
-        train_loss = train_loss / (num_batches)
-
-        dev_sentiment_accuracy, dev_sst_y_pred, dev_sst_sent_ids, \
-            dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
-            dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
-                                                                                  para_dev_dataloader,
-                                                                                  sts_dev_dataloader, model, device)
-
-        improvement = False
-        if dev_sentiment_accuracy > best_dev_sentiment_accuracy:
-            best_dev_sentiment_accuracy = dev_sentiment_accuracy
-            improvement = True
-        if dev_paraphrase_accuracy > best_dev_paraphrase_accuracy:
-            best_dev_paraphrase_accuracy = dev_paraphrase_accuracy
-            improvement = True
-        if dev_sts_corr > best_dev_sts_corr:
-            best_dev_sts_corr = dev_sts_corr
-            improvement = True
-
-        if improvement:
-            save_model(model, optimizer, args, config, args.filepath)
-            print(f"Improvement! Model saved at epoch {epoch}")
-            print(f"- Sentiment acc: {best_dev_sentiment_accuracy:.3f}")
-            print(f"- Paraphrase acc: {best_dev_paraphrase_accuracy:.3f}")
-            print(f"- STS corr: {best_dev_sts_corr:.3f}")
-
-        print(f"Epoch {epoch} Evalualtion:")
-        print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
-        print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
-        print(f"- STS corr: {dev_sts_corr:.3f}")
+        # more eval stuff?
 
 
 def test_multitask(args):
@@ -427,6 +330,10 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
+
+    parser.add_argument("--simcse_train", type=str,
+                        required=True, help="Path to SimCSE training data")
+
     parser.add_argument("--sst_train", type=str,
                         default="data/ids-sst-train.csv")
     parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
