@@ -208,7 +208,7 @@ def train_simcse(x):
         print(f"Epoch {epoch}: Average training loss: {avg_loss:.4f}")
 
 
-def test_multitask(args):
+def test_simcse(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
@@ -359,4 +359,4 @@ if __name__ == "__main__":
     args.filepath = f'{args.option}-{args.epochs}-{args.lr}-multitask.pt'
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     train_simcse(args)
-    test_multitask(args)
+    test_simcse(args)
