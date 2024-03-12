@@ -1,17 +1,3 @@
-'''
-Multitask BERT class, starter training code, evaluation, and test code.
-
-Of note are:
-* class MultitaskBERT: Your implementation of multitask BERT.
-* function train_multitask: Training procedure for MultitaskBERT. Starter code
-    copies training procedure from `classifier.py` (single-task SST).
-* function test_multitask: Test procedure for MultitaskBERT. This function generates
-    the required files for submission.
-
-Running `python multitask_classifier.py` trains and tests your MultitaskBERT and
-writes all required submission files.
-'''
-
 import random
 import numpy as np
 import argparse
@@ -54,22 +40,6 @@ def seed_everything(seed=11711):
 
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
-
-
-def unsup_simplified_contrastive_loss(positive_pairs, tau):
-    """
-    Compute the contrastive loss given a list of positive pairs and negative pairs.
-    For each positive pair, it computes the numerator using the anchor and its positive pair,
-    and computes the denominator by considering all the other pairs with respect to that anchor.
-
-    Parameters:
-    - positive_pairs: A list of tuples, each containing an anchor and a positive example.
-    - negative_pairs: A list of tuples, each containing an anchor and a negative example.
-    - tau: The temperature parameter.
-
-    Returns:
-    - A scalar value representing the total contrastive loss.
-    """
 
 
 class ContrastiveLoss(nn.Module):
@@ -183,7 +153,7 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def train_multitask(x):
+def train_simcse(x):
     '''Train MultitaskBERT.
     Currently computes and combines loss for each task during each iteration to optimzie for all three. Need to migrate to SimCSE contrastive learning.
     '''
@@ -388,5 +358,5 @@ if __name__ == "__main__":
     # Save path.
     args.filepath = f'{args.option}-{args.epochs}-{args.lr}-multitask.pt'
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
+    train_simcse(args)
     test_multitask(args)
