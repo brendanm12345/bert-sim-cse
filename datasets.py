@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import Dataset
 from tokenizer import BertTokenizer
 import json
+from torch.nn.utils.rnn import pad_sequence
 
 
 def preprocess_string(s):
@@ -242,12 +243,13 @@ class SimCSEDataset(Dataset):
     SIMCSE: Dataset class for SimCSE
     """
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, args):
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         self.sentences = self.load_sentences(filepath)
 
     # every line in the wiki dataset is a sentence
     def load_sentences(self, filepath):
+        print("this is file path", filepath)
         with open(filepath, 'r', encoding='utf-8') as file:
             sentences = [line.strip() for line in file.readlines()]
         return sentences
@@ -263,9 +265,88 @@ class SimCSEDataset(Dataset):
         return inputs['input_ids'].squeeze(0), inputs['attention_mask'].squeeze(0)
 
     def collate_fn(self, batch):
-        input_ids = torch.stack([item[0] for item in batch])
-        attention_mask = torch.stack([item[1] for item in batch])
+        input_ids = pad_sequence(
+            [item[0] for item in batch], batch_first=True, padding_value=0)
+        attention_mask = pad_sequence(
+            [item[1] for item in batch], batch_first=True, padding_value=0)
         return {'input_ids': input_ids, 'attention_mask': attention_mask}
+
+
+def load_multitask_and_simcse_data(sentiment_filename, paraphrase_filename, similarity_filename, simcse_filename, split='train'):
+
+    sentiment_data = []
+    num_labels = {}
+    if split == 'test':
+        with open(sentiment_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                sentiment_data.append((sent, sent_id))
+    else:
+        with open(sentiment_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                label = int(record['sentiment'].strip())
+                if label not in num_labels:
+                    num_labels[label] = len(num_labels)
+                sentiment_data.append((sent, label, sent_id))
+
+    print(
+        f"Loaded {len(sentiment_data)} {split} examples from {sentiment_filename}")
+
+    paraphrase_data = []
+    if split == 'test':
+        with open(paraphrase_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent_id = record['id'].lower().strip()
+                paraphrase_data.append((preprocess_string(record['sentence1']),
+                                        preprocess_string(record['sentence2']),
+                                        sent_id))
+
+    else:
+        with open(paraphrase_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                try:
+                    sent_id = record['id'].lower().strip()
+                    paraphrase_data.append((preprocess_string(record['sentence1']),
+                                            preprocess_string(
+                                                record['sentence2']),
+                                            int(float(record['is_duplicate'])), sent_id))
+                except:
+                    pass
+
+    print(
+        f"Loaded {len(paraphrase_data)} {split} examples from {paraphrase_filename}")
+
+    similarity_data = []
+    if split == 'test':
+        with open(similarity_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent_id = record['id'].lower().strip()
+                similarity_data.append((preprocess_string(record['sentence1']),
+                                        preprocess_string(record['sentence2']), sent_id))
+    else:
+        with open(similarity_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent_id = record['id'].lower().strip()
+                similarity_data.append((preprocess_string(record['sentence1']),
+                                        preprocess_string(record['sentence2']),
+                                        float(record['similarity']), sent_id))
+
+    print(
+        f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
+
+    # Logic to load the SimCSE dataset for unsupervised learning
+    simcse_data = []
+    with open(simcse_filename, 'r', encoding='utf-8') as fp:
+        for record in csv.DictReader(fp, delimiter='\t'):
+            sent_id = record['id'].lower().strip()
+            sentence = preprocess_string(record['sentence'])
+            simcse_data.append((sentence, sent_id))
+
+    print(f"Loaded {len(simcse_data)} {split} examples from {simcse_filename}")
+    return sentiment_data, num_labels, paraphrase_data, similarity_data, simcse_data
 
 
 def load_multitask_data(sentiment_filename, paraphrase_filename, similarity_filename, split='train'):
