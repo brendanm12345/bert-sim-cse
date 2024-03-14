@@ -2,7 +2,7 @@ import random
 import numpy as np
 import argparse
 from types import SimpleNamespace
-import datetime
+from datetime import datetime
 
 import torch
 from torch import nn
@@ -510,7 +510,7 @@ def get_args():
     size = "small"
 
     parser.add_argument("--simcse_train", type=str,
-                        default="data/{size}/unsup_simcse.csv")
+                        default=f"data/{size}/unsup_simcse.csv")
 
     # Updated file paths to shortened data versions
     parser.add_argument("--sst_train", type=str,
@@ -567,7 +567,7 @@ if __name__ == "__main__":
     args = get_args()
     # Save path.
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    args.filepath = f'{args.option}-{args.epochs}-{args.lr}-{current_datetime}-multitask.pt'
+    args.filepath = f'models/{args.option}-{args.epochs}-{args.lr}-{current_datetime}-multitask.pt'
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     train_all(args)
     test_all(args)
