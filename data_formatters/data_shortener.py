@@ -36,7 +36,7 @@ def shorten_csv_files(data_folder_path):
                 return df_sample
             
             # Use sample_csv_rows to sample 1000 rows from the file
-            shortened_df = sample_csv_rows(file_path, 1000)
+            shortened_df = sample_csv_rows(file_path, 100)
             shortened_df.to_csv(shortened_file_path, index=False)
             print(f"Processed and shortened {file_name}")
         except Exception as e:
