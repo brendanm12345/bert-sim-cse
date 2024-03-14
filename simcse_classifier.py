@@ -409,7 +409,7 @@ def train_all(x):
             print(f"- STS corr: {best_dev_sts_corr:.3f}")
 
         print(f"Epoch {epoch} Evaluation:")
-        print(f"- Contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
+        print(f"- Total contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
         print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
         print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
         print(f"- STS corr: {dev_sts_corr:.3f}")
