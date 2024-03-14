@@ -79,7 +79,6 @@ class ContrastiveLoss(nn.Module):
         
         # The loss is the negative log likelihood averaged across the batch
         loss = -log_probs.mean()
-        print("this is loss", loss)
         return loss
 
 
@@ -132,8 +131,6 @@ class MultitaskBERT(nn.Module):
     def forward(self, input_ids, attention_mask, simcse=False):
         # Process input through BERT - sentence data ids gets turned to embeddings
   
-        
-
         if simcse:
             # For SimCSE, apply dropout twice to get two embeddings for the same input
 
@@ -304,7 +301,6 @@ def train_all(x):
                 # save contrastive loss specifically so we can track it at end of each epoch
                 contrastive_loss = loss.item()
                 total_contrastive_loss_for_epoch += contrastive_loss
-                print("contrastive loss: ", contrastive_loss)
                 train_loss += loss.item()
                 num_batches += 1
             except StopIteration:
@@ -507,7 +503,7 @@ def test_all(args):
 def get_args():
     parser = argparse.ArgumentParser()
 
-    size = "small"
+    size = "big"
 
     parser.add_argument("--simcse_train", type=str,
                         default=f"data/{size}/unsup_simcse.csv")
@@ -531,7 +527,7 @@ def get_args():
                         default=f"data/{size}/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="pretrain")

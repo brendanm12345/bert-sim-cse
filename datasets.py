@@ -249,7 +249,6 @@ class SimCSEDataset(Dataset):
 
     # every line in the wiki dataset is a sentence
     def load_sentences(self, filepath):
-        print("this is file path", filepath)
         with open(filepath, 'r', encoding='utf-8') as file:
             sentences = [line.strip() for line in file.readlines()]
         return sentences
