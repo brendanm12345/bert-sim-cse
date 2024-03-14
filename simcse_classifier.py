@@ -47,30 +47,39 @@ class ContrastiveLoss(nn.Module):
     def __init__(self, temperature=0.05):
         super(ContrastiveLoss, self).__init__()
         self.temperature = temperature
-        self.cosine_similarity = nn.CosineSimilarity(dim=-1)
 
-    def forward(self, positive_pairs):
-        total_loss = 0.0
-        for anchor, positive in positive_pairs:
-            # calculate the numerator of the softmax for the positive pair
-            positive_similarity = torch.exp(
-                torch.dot(anchor, positive) / self.temperature)
-
-            # calculate the denominator of the softmax for all negative pairs
-            negative_sum = positive_similarity  # include the positive pair in the denominator
-            for i in range(len(positive_pairs)):
-                # Compute similarity with each negative pair (excluding self-pair)
-                # Ensure not to include the positive pair itself
-                if positive_pairs[i][1] is not positive:
-                    negative_similarity = torch.exp(
-                        torch.dot(anchor, positive_pairs[i][1]) / self.temperature)
-                    negative_sum = negative_sum + negative_similarity  # Use a non-inplace operation
-
-            # compute the loss for the current positive pair
-            pair_loss = -torch.log(positive_similarity / negative_sum)
-            total_loss += pair_loss
-
-        return total_loss
+    def forward(self, embeddings):
+        # Normalize the embeddings to have unit length
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        
+        # Calculate cosine similarity matrix (size: batch_size x batch_size)
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+        
+        # For numerical stability, subtract the maximum value in each row
+        max_vals = torch.max(similarity_matrix, dim=1, keepdim=True)[0]
+        similarity_matrix = similarity_matrix - max_vals.detach()
+        
+        # The diagonal entries are the similarities between each embedding and itself
+        # We want to exclude these when calculating the denominator in softmax
+        logits_mask = torch.eye(similarity_matrix.size(0)).bool().to(embeddings.device)
+        similarity_matrix.masked_fill_(logits_mask, float('-inf'))
+        
+        # Calculate softmax along each row, but exclude the diagonal (self-similarity)
+        softmax_scores = F.softmax(similarity_matrix, dim=1)
+        
+        # The targets are the positions of the positive examples in the softmax_scores matrix
+        # For unsupervised SimCSE, the positive example for each anchor is its pair (next in sequence)
+        targets = torch.arange(embeddings.size(0)).to(embeddings.device)
+        if embeddings.size(0) % 2 == 0:  # Assuming even batch size for simplicity
+            targets = (targets + 1) - 2 * (targets % 2)
+        
+        # Calculate the log likelihood of the positive examples
+        log_probs = torch.log(torch.gather(softmax_scores, 1, targets.unsqueeze(1)).squeeze(1))
+        
+        # The loss is the negative log likelihood averaged across the batch
+        loss = -log_probs.mean()
+        print("this is loss", loss)
+        return loss
 
 
 class GaussianDropout(nn.Module):
@@ -121,22 +130,20 @@ class MultitaskBERT(nn.Module):
     # SIMCSE: Updated this function
     def forward(self, input_ids, attention_mask, simcse=False):
         # Process input through BERT - sentence data ids gets turned to embeddings
+  
         outputs = self.bert(
             input_ids, attention_mask=attention_mask)
 
         if simcse:
             # For SimCSE, apply dropout twice to get two embeddings for the same input
-            # pooled_output = outputs.pooler_output
-
-            # (maybe) get the hidden state of the [CLS] token
-            # cls_embeddings = outputs.last_hidden_state[:, 0, :]
 
             # get pooler output
             pooler_output = outputs["pooler_output"]
             # Apply dropout first time
             pooled_output_first = self.dropout(pooler_output)
-            # Re-apply dropout to get a second, different embedding
-            pooled_output_second = self.dropout(pooler_output)
+            # Clone the pooler_output before re-applying dropout to avoid in-place modification
+            pooled_output_second = self.dropout(pooler_output.clone())
+         
 
             return pooled_output_first, pooled_output_second
         else:
@@ -149,7 +156,6 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        # TODO Added code here
         embeddings = self.forward(input_ids, attention_mask)
         embeddings = self.dropout(embeddings)
         logits = self.sentiment_classifier(embeddings)
@@ -162,7 +168,6 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        # TODO Added code here
         embeddings_1 = self.forward(input_ids_1, attention_mask_1)
         embeddings_2 = self.forward(input_ids_2, attention_mask_2)
         embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
@@ -176,7 +181,6 @@ class MultitaskBERT(nn.Module):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
-        # TODO Add code here
         embeddings_1 = self.forward(input_ids_1, attention_mask_1)
         embeddings_2 = self.forward(input_ids_2, attention_mask_2)
         embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
@@ -198,92 +202,6 @@ def save_model(model, optimizer, args, config, filepath):
 
     torch.save(save_info, filepath)
     print(f"save the model to {filepath}")
-
-
-# def train_simcse(x):
-#     '''Train MultitaskBERT.
-#     Currently computes and combines loss for each task during each iteration to optimzie for all three. Need to migrate to SimCSE contrastive learning.
-#     '''
-#     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-
-#     # Create the data and its corresponding datasets and dataloader.
-#     sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_and_simcse_data(
-#         args.sst_train, args.para_train, args.sts_train, split='train')
-#     sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_and_simcse_data(
-#         args.sst_dev, args.para_dev, args.sts_dev, split='dev')
-
-#     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
-#     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
-
-#     para_train_data = SentencePairDataset(para_train_data, args)
-#     para_dev_data = SentencePairDataset(para_train_data, args)
-
-#     sts_train_data = SentencePairDataset(sts_train_data, args)
-#     sts_dev_data = SentencePairDataset(sts_train_data, args)
-
-#     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-#                                       collate_fn=sst_train_data.collate_fn)
-#     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-#                                     collate_fn=sst_dev_data.collate_fn)
-
-#     para_train_dataloader = DataLoader(
-#         para_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
-#     para_dev_dataloader = DataLoader(
-#         para_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=para_train_data.collate_fn)
-
-#     sts_train_dataloader = DataLoader(
-#         sts_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
-#     sts_dev_dataloader = DataLoader(
-#         sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
-
-#     # Load SimCSE training and development data
-#     simcse_train_data = SimCSEDataset(args.simcse_train)
-
-#     # simcse_dev_data = SimCSEDataset(args.simcse_dev)
-
-#     # Create DataLoaders for SimCSE training and development data
-#     simcse_train_dataloader = DataLoader(
-#         simcse_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=simcse_train_data.collate_fn)
-#     # simcse_dev_dataloader = DataLoader(
-#     #     simcse_dev_data, shuffle=False, batch_size=args.batch_size, collate_fn=simcse_dev_data.collate_fn)
-
-#     config = SimpleNamespace(hidden_dropout_prob=args.hidden_dropout_prob,
-#                              num_labels=2,  # Assuming binary classification for simplicity < this might be wrong since we want to test on same tasks
-#                              hidden_size=768,
-#                              data_dir='.',
-#                              option=args.option,
-#                              simcse=True)
-
-#     model = MultitaskBERT(config).to(device)
-#     contrastive_loss_fn = ContrastiveLoss().to(device)
-
-#     optimizer = AdamW(model.parameters(), lr=args.lr)
-
-#     for epoch in range(args.epochs):
-#         model.train()
-#         total_loss = 0.0
-#         for batch in tqdm(simcse_train_dataloader, desc=f"Epoch {epoch}"):
-#             input_ids, attention_mask = batch['input_ids'].to(
-#                 device), batch['attention_mask'].to(device)
-
-#             # Forward pass to get embeddings. For SimCSE, we expect two sets of embeddings per input due to dropout variation.
-#             embeddings1, embeddings2 = model(input_ids, attention_mask)
-
-#             positive_pairs = list(zip(embeddings1, embeddings2))
-#             loss = contrastive_loss_fn(positive_pairs=positive_pairs)
-
-#             # Backpropagation
-#             optimizer.zero_grad()
-#             loss.backward()
-
-#             # Gradient clipping
-#             clip_grad_norm_(model.parameters(), max_norm=1.0)
-#             optimizer.step()
-
-#             total_loss += loss.item()
-
-#         avg_loss = total_loss / len(simcse_train_dataloader)
-#         print(f"Epoch {epoch}: Average training loss: {avg_loss:.4f}")
 
 
 def train_all(x):
@@ -366,6 +284,7 @@ def train_all(x):
             para_train_dataloader), len(sts_train_dataloader), len(contrastive_train_dataloader))
 
         # for each batch
+        total_contrastive_loss_for_epoch = 0
         for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
             # train simcse
             try:
@@ -376,14 +295,18 @@ def train_all(x):
                 # Forward pass through the model to get two sets of embeddings
                 pooled_output_first, pooled_output_second = model(
                     input_ids=input_ids, attention_mask=attention_mask, simcse=True)
+                
+                # Concatenate the embeddings from the two passes to form a single batch
+                embeddings = torch.cat((pooled_output_first, pooled_output_second), dim=0)
+
                 # Calculate contrastive loss
-                positive_pairs = list(
-                    zip(pooled_output_first, pooled_output_second))
-                loss = contrastive_loss_fn(positive_pairs)
+                loss = contrastive_loss_fn(embeddings)
                 loss.backward()
                 optimizer.step()
                 # save contrastive loss specifically so we can track it at end of each epoch
                 contrastive_loss = loss.item()
+                total_contrastive_loss_for_epoch += contrastive_loss
+                print("contrastive loss: ", contrastive_loss)
                 train_loss += loss.item()
                 num_batches += 1
             except StopIteration:
@@ -486,7 +409,7 @@ def train_all(x):
             print(f"- STS corr: {best_dev_sts_corr:.3f}")
 
         print(f"Epoch {epoch} Evaluation:")
-        print(f"- Contrastive loss: {contrastive_loss:.3f}")
+        print(f"- Contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
         print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
         print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
         print(f"- STS corr: {dev_sts_corr:.3f}")
@@ -583,8 +506,13 @@ def test_all(args):
                 f.write(f"{p} , {s} \n")
 
 
-# def test_simcse(args):
-#     '''Test and save predictions on the dev and test sets of all three tasks.'''
+# def get_args():
+#     parser = argparse.ArgumentParser()
+
+#     parser.add_argument("--simcse_train", type=str,
+#                         default="simcse/unsup_simcse_shortened.csv")
+# # def test_simcse(args):
+# #     '''Test and save predictions on the dev and test sets of all three tasks.'''
 #     with torch.no_grad():
 #         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
 #         saved = torch.load(args.filepath)
@@ -674,28 +602,82 @@ def test_all(args):
 #                 f.write(f"{p} , {s} \n")
 
 
+# def get_args():
+#     parser = argparse.ArgumentParser()
+
+#     parser.add_argument("--simcse_train", type=str,
+#                         default="simcse/unsup_simcse_shortened.csv")
+
+#     parser.add_argument("--sst_train", type=str,
+#                         default="data/ids-sst-train.csv")
+#     parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
+#     parser.add_argument("--sst_test", type=str,
+#                         default="data/ids-sst-test-student.csv")
+
+#     parser.add_argument("--para_train", type=str,
+#                         default="data/quora-train.csv")
+#     parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
+#     parser.add_argument("--para_test", type=str,
+#                         default="data/quora-test-student.csv")
+
+#     parser.add_argument("--sts_train", type=str, default="data/sts-train.csv")
+#     parser.add_argument("--sts_dev", type=str, default="data/sts-dev.csv")
+#     parser.add_argument("--sts_test", type=str,
+#                         default="data/sts-test-student.csv")
+
+#     parser.add_argument("--seed", type=int, default=11711)
+#     parser.add_argument("--epochs", type=int, default=10)
+#     parser.add_argument("--option", type=str,
+#                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
+#                         choices=('pretrain', 'finetune'), default="pretrain")
+#     parser.add_argument("--use_gpu", action='store_true')
+
+#     parser.add_argument("--sst_dev_out", type=str,
+#                         default="predictions/sst-dev-output.csv")
+#     parser.add_argument("--sst_test_out", type=str,
+#                         default="predictions/sst-test-output.csv")
+
+#     parser.add_argument("--para_dev_out", type=str,
+#                         default="predictions/para-dev-output.csv")
+#     parser.add_argument("--para_test_out", type=str,
+#                         default="predictions/para-test-output.csv")
+
+#     parser.add_argument("--sts_dev_out", type=str,
+#                         default="predictions/sts-dev-output.csv")
+#     parser.add_argument("--sts_test_out", type=str,
+#                         default="predictions/sts-test-output.csv")
+
+#     parser.add_argument(
+#         "--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
+#     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
+#     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+
+#     args = parser.parse_args()
+#     return args
+
 def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--simcse_train", type=str,
-                        default="data/simcse/unsup_simcse.csv")
+                        default="data/shortened_data/unsup_simcse_shortened.csv")
 
+    # Updated file paths to shortened data versions
     parser.add_argument("--sst_train", type=str,
-                        default="data/ids-sst-train.csv")
-    parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
+                        default="data/shortened_data/ids-sst-train.csv")
+    parser.add_argument("--sst_dev", type=str, default="data/shortened_data/ids-sst-dev.csv")
     parser.add_argument("--sst_test", type=str,
-                        default="data/ids-sst-test-student.csv")
+                        default="data/shortened_data/ids-sst-test-student.csv")
 
     parser.add_argument("--para_train", type=str,
-                        default="data/quora-train.csv")
-    parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
+                        default="data/shortened_data/quora-train.csv")
+    parser.add_argument("--para_dev", type=str, default="data/shortened_data/quora-dev.csv")
     parser.add_argument("--para_test", type=str,
-                        default="data/quora-test-student.csv")
+                        default="data/shortened_data/quora-test-student.csv")
 
-    parser.add_argument("--sts_train", type=str, default="data/sts-train.csv")
-    parser.add_argument("--sts_dev", type=str, default="data/sts-dev.csv")
+    parser.add_argument("--sts_train", type=str, default="data/shortened_data/sts-train.csv")
+    parser.add_argument("--sts_dev", type=str, default="data/shortened_data/sts-dev.csv")
     parser.add_argument("--sts_test", type=str,
-                        default="data/sts-test-student.csv")
+                        default="data/shortened_data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
     parser.add_argument("--epochs", type=int, default=10)
@@ -735,3 +717,4 @@ if __name__ == "__main__":
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     train_all(args)
     test_all(args)
+

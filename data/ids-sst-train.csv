@@ -1,4 +1,3 @@
-	id	sentence	sentiment
 0	32a4f146782cbde1b7fa65799	 The Rock is destined to be the 21st Century 's new `` Conan '' and that he 's going to make a splash even greater than Arnold Schwarzenegger , Jean-Claud Van Damme or Steven Segal .	3
 1	6e0fb51a6fefc7c1b6d77a1d5	 The gorgeously elaborate continuation of `` The Lord of the Rings '' trilogy is so huge that a column of words can not adequately describe co-writer\/director Peter Jackson 's expanded vision of J.R.R. Tolkien 's Middle-earth .	4
 2	9b1d25f272afcc21d4508f652	 Singer\/composer Bryan Adams contributes a slew of songs -- a few potential hits , a few more simply intrusive to the story -- but the whole package certainly captures the intended , er , spirit of the piece .	3
@@ -24,6 +23,7 @@
 22	73d06d124949703b4c8f0a92f	 near the end takes on a whole other meaning .	2
 23	529fa6572f751022eab93408f	 Grenier is terrific , bringing an unforced , rapid-fire delivery to Toback 's Heidegger - and Nietzsche-referencing dialogue .	4
 24	eb4460d50070c2ef88ae281d0	 The Sundance Film Festival has become so buzz-obsessed that fans and producers descend upon Utah each January to ferret out The Next Great Thing .	2
+	id	sentence	sentiment
 25	84e0eafdf108871a4e2691ae9	 ` Tadpole ' was one of the films so declared this year , but it 's really more of The Next Pretty Good Thing .	2
 26	d32dd4775a419a2040d05e69c	 The actors are fantastic .	4
 27	0b925c7e9f5fb12fa66a9dc41	 They are what makes it worth the trip to the theatre .	3

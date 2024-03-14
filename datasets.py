@@ -273,7 +273,8 @@ class SimCSEDataset(Dataset):
 
 
 def load_multitask_and_simcse_data(sentiment_filename, paraphrase_filename, similarity_filename, simcse_filename, split='train'):
-
+    print("simcse file name", simcse_filename)
+    print("sentiment file name", sentiment_filename)
     sentiment_data = []
     num_labels = {}
     if split == 'test':
