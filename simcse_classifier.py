@@ -120,27 +120,31 @@ class MultitaskBERT(nn.Module):
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
         # * 2 for concat sentence embeddings
         self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
+        self.gaussian_dropout = GaussianDropout(config.hidden_dropout_prob)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # SIMCSE: Added code
-        self.simcse = True
+        self.simcse = False
         self.contrastive_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
 
     # SIMCSE: Updated this function
     def forward(self, input_ids, attention_mask, simcse=False):
         # Process input through BERT - sentence data ids gets turned to embeddings
-  
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
         if simcse:
             # For SimCSE, apply dropout twice to get two embeddings for the same input
+                       # Get pooler output
+            pooler_output = outputs["pooler_output"]
+            # Clone the pooler_output before applying dropout to ensure different dropout masks
+            pooler_output_clone = pooler_output.clone()
+            # Apply dropout first time
+            pooled_output_first = self.gaussian_dropout(pooler_output)
+            # Apply dropout second time to the cloned output
+            pooled_output_second = self.gaussian_dropout(pooler_output_clone)
 
-            output_first = self.bert(input_ids, attention_mask=attention_mask)
-            output_first_pooled = output_first["pooler_output"]
+            return pooled_output_first, pooled_output_second
 
-            output_second = self.bert(input_ids, attention_mask=attention_mask)
-            output_second_pooled = output_second["pooler_output"]
-
-            return output_first_pooled, output_second_pooled
         else:
             outputs = self.bert(input_ids, attention_mask=attention_mask)
             return outputs["pooler_output"]
@@ -199,20 +203,17 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def train_all(x):
+def train_all(args):
     '''Train MultitaskBERT.
     SST, Paraphrase, STS, SimCSE
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    # Create the data and its corresponding datasets and dataloader.
+
     sst_train_data, num_labels, para_train_data, sts_train_data, contrastive_train_data = load_multitask_and_simcse_data(
         args.sst_train, args.para_train, args.sts_train, args.simcse_train, split='train')
 
     sst_dev_data, num_labels, para_dev_data, sts_dev_data, contrastive_train_data = load_multitask_and_simcse_data(
         args.sst_dev, args.para_dev, args.sts_dev, args.simcse_train, split='dev')
-
-    # SIMCSE: Load SimCSE training data
-    contrastive_train_data = SimCSEDataset(args.simcse_train, args)
 
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -237,11 +238,15 @@ def train_all(x):
         sts_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
     sts_dev_dataloader = DataLoader(
         sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
-    contrastive_loss_fn = ContrastiveLoss().to(device)
 
-    # SIMCSE: Create DataLoader for SimCSE training data
-    contrastive_train_dataloader = DataLoader(
-        contrastive_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=contrastive_train_data.collate_fn)
+     # SIMCSE: Load SimCSE training data
+    if args.simcse:
+        contrastive_train_data = SimCSEDataset(args.simcse_train, args)    
+        contrastive_loss_fn = ContrastiveLoss().to(device)
+
+        # SIMCSE: Create DataLoader for SimCSE training data
+        contrastive_train_dataloader = DataLoader(
+            contrastive_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=contrastive_train_data.collate_fn)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -273,38 +278,44 @@ def train_all(x):
         para_iter = iter(para_train_dataloader)
         sts_iter = iter(sts_train_dataloader)
         # SIMCSE
-        contrastive_iter = iter(contrastive_train_dataloader)
-
-        max_steps = max(len(sst_train_dataloader), len(
-            para_train_dataloader), len(sts_train_dataloader), len(contrastive_train_dataloader))
+        if args.simcse:
+            contrastive_iter = iter(contrastive_train_dataloader)
+        
+        if args.simcse:
+            max_steps = max(len(sst_train_dataloader), len(
+                para_train_dataloader), len(sts_train_dataloader), len(contrastive_train_dataloader))
+        else:
+            max_steps = max(len(sst_train_dataloader), len(
+                para_train_dataloader), len(sts_train_dataloader))
 
         # for each batch
         total_contrastive_loss_for_epoch = 0
         for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
             # train simcse
-            try:
-                simcse_batch = next(contrastive_iter)
-                input_ids, attention_mask = simcse_batch['input_ids'].to(
-                    device), simcse_batch['attention_mask'].to(device)
-                optimizer.zero_grad()
-                # Forward pass through the model to get two sets of embeddings
-                pooled_output_first, pooled_output_second = model(
-                    input_ids=input_ids, attention_mask=attention_mask, simcse=True)
-                
-                # Concatenate the embeddings from the two passes to form a single batch
-                embeddings = torch.cat((pooled_output_first, pooled_output_second), dim=0)
+            if args.simcse:
+                try:
+                    simcse_batch = next(contrastive_iter)
+                    input_ids, attention_mask = simcse_batch['input_ids'].to(
+                        device), simcse_batch['attention_mask'].to(device)
+                    optimizer.zero_grad()
+                    # Forward pass through the model to get two sets of embeddings
+                    pooled_output_first, pooled_output_second = model(
+                        input_ids=input_ids, attention_mask=attention_mask, simcse=True)
+                    
+                    # Concatenate the embeddings from the two passes to form a single batch
+                    embeddings = torch.cat((pooled_output_first, pooled_output_second), dim=0)
 
-                # Calculate contrastive loss
-                loss = contrastive_loss_fn(embeddings)
-                loss.backward()
-                optimizer.step()
-                # save contrastive loss specifically so we can track it at end of each epoch
-                contrastive_loss = loss.item()
-                total_contrastive_loss_for_epoch += contrastive_loss
-                train_loss += loss.item()
-                num_batches += 1
-            except StopIteration:
-                pass
+                    # Calculate contrastive loss
+                    loss = contrastive_loss_fn(embeddings)
+                    loss.backward()
+                    optimizer.step()
+                    # save contrastive loss specifically so we can track it at end of each epoch
+                    contrastive_loss = loss.item()
+                    total_contrastive_loss_for_epoch += contrastive_loss
+                    train_loss += loss.item()
+                    num_batches += 1
+                except StopIteration:
+                    pass
 
             # train sst
             try:
@@ -403,7 +414,8 @@ def train_all(x):
             print(f"- STS corr: {best_dev_sts_corr:.3f}")
 
         print(f"Epoch {epoch} Evaluation:")
-        print(f"- Total contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
+        if args.simcse:
+            print(f"- Total contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
         print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
         print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
         print(f"- STS corr: {dev_sts_corr:.3f}")
@@ -504,6 +516,8 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     size = "big"
+
+    parser.add_argument("--simcse", action="store_true", help="Include SimCSE training")
 
     parser.add_argument("--simcse_train", type=str,
                         default=f"data/{size}/unsup_simcse.csv")
