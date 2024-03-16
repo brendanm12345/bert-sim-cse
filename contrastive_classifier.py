@@ -1,26 +1,18 @@
 '''
-Multitask BERT class, starter training code, evaluation, and test code.
-
-Of note are:
-* class MultitaskBERT: Your implementation of multitask BERT.
-* function train_multitask: Training procedure for MultitaskBERT. Starter code
-    copies training procedure from `classifier.py` (single-task SST).
-* function test_multitask: Test procedure for MultitaskBERT. This function generates
-    the required files for submission.
-
-Running `python multitask_classifier.py` trains and tests your MultitaskBERT and
-writes all required submission files.
+Multitask with SimCSE-style contrastive learning BERT class
 '''
 
 import random
 import numpy as np
 import argparse
 from types import SimpleNamespace
+from datetime import datetime
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
 
 from bert import BertModel
 from optimizer import AdamW
@@ -31,7 +23,9 @@ from datasets import (
     SentenceClassificationTestDataset,
     SentencePairDataset,
     SentencePairTestDataset,
-    load_multitask_data
+    load_multitask_and_simcse_data,
+    load_multitask_data,
+    SimCSEDataset,
 )
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
@@ -40,7 +34,6 @@ from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_mul
 TQDM_DISABLE = False
 
 
-# Fix the random seed.
 def seed_everything(seed=11711):
     random.seed(seed)
     np.random.seed(seed)
@@ -55,49 +48,80 @@ BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
 
-class MultitaskBERT(nn.Module):
-    '''
-    This module should use BERT for 3 tasks:
+class ContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.05):
+        super(ContrastiveLoss, self).__init__()
+        self.temperature = temperature
 
-    - Sentiment classification (predict_sentiment)
-    - Paraphrase detection (predict_paraphrase)
-    - Semantic Textual Similarity (predict_similarity)
-    '''
+    def forward(self, embeddings):
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+        
+        max_vals = torch.max(similarity_matrix, dim=1, keepdim=True)[0]
+        similarity_matrix = similarity_matrix - max_vals.detach()
+        
+        logits_mask = torch.eye(similarity_matrix.size(0)).bool().to(embeddings.device)
+        similarity_matrix.masked_fill_(logits_mask, float('-inf'))
+        
+        softmax_scores = F.softmax(similarity_matrix, dim=1)
+        
+        targets = torch.arange(embeddings.size(0)).to(embeddings.device)
+        if embeddings.size(0) % 2 == 0:  # Assuming even batch size for simplicity
+            targets = (targets + 1) - 2 * (targets % 2)
+        
+        log_probs = torch.log(torch.gather(softmax_scores, 1, targets.unsqueeze(1)).squeeze(1))
+        
+        loss = -log_probs.mean()
+        return loss
+
+
+class GaussianDropout(nn.Module):
+    def __init__(self, p=0.1):
+        super(GaussianDropout, self).__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.training:
+            # Sample noise
+            noise = torch.randn_like(x) * self.p
+            return x + noise
+        return x
+
+class MultitaskBERT(nn.Module):
 
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
-        # Pretrain mode does not require updating BERT paramters.
         for param in self.bert.parameters():
             if config.option == 'pretrain':
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
-        # You will want to add layers here to perform the downstream tasks.
-        self.sentiment_classifier = nn.Linear(
-            BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
-        # * 2 for concat sentence embeddings
+
+        self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
-        # * 2 for concat sentence embeddings
         self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
+        self.gaussian_dropout = GaussianDropout(config.hidden_dropout_prob)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids, attention_mask):
-        'Takes a batch of sentences and produces embeddings for them.'
-        # The final BERT embedding is the hidden state of [CLS] token (the first token)
-        # Here, you can start by just returning the embeddings straight from BERT.
-        # When thinking of improvements, you can later try modifying this
-        # (e.g., by adding other layers).
-        outputs = self.bert(input_ids, attention_mask)
+        self.simcse = False
+        self.contrastive_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
 
-        # (maybe) get the hidden state of the [CLS] token
-        # cls_embeddings = outputs.last_hidden_state[:, 0, :]
+    def forward(self, input_ids, attention_mask, simcse=False):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        if simcse:
+            pooler_output = outputs["pooler_output"]
+            pooler_output_clone = pooler_output.clone()
+            pooled_output_first = self.gaussian_dropout(pooler_output)
+            pooled_output_second = self.gaussian_dropout(pooler_output_clone)
 
-        # get pooler output
-        pooler_output = outputs["pooler_output"]
+            return pooled_output_first, pooled_output_second
 
-        return pooler_output
+        else:
+            outputs = self.bert(input_ids, attention_mask=attention_mask)
+            return outputs["pooler_output"]
 
     def predict_sentiment(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
@@ -105,7 +129,6 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        # TODO Added code here
         embeddings = self.forward(input_ids, attention_mask)
         embeddings = self.dropout(embeddings)
         logits = self.sentiment_classifier(embeddings)
@@ -154,20 +177,17 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def train_multitask(x):
+def train_all(args):
     '''Train MultitaskBERT.
-
-    Currently only trains on SST dataset. The way you incorporate training examples
-    from other datasets into the training procedure is up to you. To begin, take a
-    look at test_multitask below to see how you can use the custom torch `Dataset`s
-    in datasets.py to load in examples from the Quora and SemEval datasets.
+    SST, Paraphrase, STS, SimCSE
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    # Create the data and its corresponding datasets and dataloader.
-    sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
-        args.sst_train, args.para_train, args.sts_train, split='train')
-    sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
+
+    sst_train_data, num_labels, para_train_data, sts_train_data, contrastive_train_data = load_multitask_and_simcse_data(
+        args.sst_train, args.para_train, args.sts_train, args.simcse_train, split='train')
+
+    sst_dev_data, num_labels, para_dev_data, sts_dev_data, contrastive_train_data = load_multitask_and_simcse_data(
+        args.sst_dev, args.para_dev, args.sts_dev, args.simcse_train, split='dev')
 
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -193,7 +213,13 @@ def train_multitask(x):
     sts_dev_dataloader = DataLoader(
         sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
 
-    # Init model.
+    if args.simcse:
+        contrastive_train_data = SimCSEDataset(args.simcse_train, args)    
+        contrastive_loss_fn = ContrastiveLoss().to(device)
+
+        contrastive_train_dataloader = DataLoader(
+            contrastive_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=contrastive_train_data.collate_fn)
+
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
               'num_labels': num_labels,
               'hidden_size': 768,
@@ -222,11 +248,45 @@ def train_multitask(x):
         para_iter = iter(para_train_dataloader)
         sts_iter = iter(sts_train_dataloader)
 
-        max_steps = max(len(sst_train_dataloader), len(
-            para_train_dataloader), len(sts_train_dataloader))
+        if args.simcse:
+            contrastive_iter = iter(contrastive_train_dataloader)
+        
+        if args.simcse:
+            max_steps = max(len(sst_train_dataloader), len(
+                para_train_dataloader), len(sts_train_dataloader), len(contrastive_train_dataloader))
+        else:
+            max_steps = max(len(sst_train_dataloader), len(
+                para_train_dataloader), len(sts_train_dataloader))
 
         # for each batch
+        total_contrastive_loss_for_epoch = 0
         for _ in tqdm(range(max_steps), desc=f"Epoch {epoch}"):
+            # train simcse
+            if args.simcse:
+                try:
+                    simcse_batch = next(contrastive_iter)
+                    input_ids, attention_mask = simcse_batch['input_ids'].to(
+                        device), simcse_batch['attention_mask'].to(device)
+                    optimizer.zero_grad()
+                    # forward pass through the model to get two sets of embeddings
+                    pooled_output_first, pooled_output_second = model(
+                        input_ids=input_ids, attention_mask=attention_mask, simcse=True)
+                    
+                    # concatenate the embeddings from the two passes to form a single batch
+                    embeddings = torch.cat((pooled_output_first, pooled_output_second), dim=0)
+
+                    # calculate contrastive loss
+                    loss = contrastive_loss_fn(embeddings)
+                    loss.backward()
+                    optimizer.step()
+                    # save contrastive loss specifically so we can track it at end of each epoch
+                    contrastive_loss = loss.item()
+                    total_contrastive_loss_for_epoch += contrastive_loss
+                    train_loss += loss.item()
+                    num_batches += 1
+                except StopIteration:
+                    pass
+
             # train sst
             try:
                 batch = next(sst_iter)
@@ -323,13 +383,15 @@ def train_multitask(x):
             print(f"- Paraphrase acc: {best_dev_paraphrase_accuracy:.3f}")
             print(f"- STS corr: {best_dev_sts_corr:.3f}")
 
-        print(f"Epoch {epoch} Evalualtion:")
+        print(f"Epoch {epoch} Evaluation:")
+        if args.simcse:
+            print(f"- Total contrastive loss: {total_contrastive_loss_for_epoch:.3f}")
         print(f"- Sentiment acc: {dev_sentiment_accuracy:.3f}")
         print(f"- Paraphrase acc: {dev_paraphrase_accuracy:.3f}")
         print(f"- STS corr: {dev_sts_corr:.3f}")
 
 
-def test_multitask(args):
+def test_all(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
@@ -422,44 +484,55 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
+
+    size = "small"
+
+    parser.add_argument("--simcse", action="store_true", help="Include SimCSE training")
+
+    parser.add_argument("--simcse_train", type=str,
+                        default=f"data/{size}/unsup_simcse.csv")
+
+    # Updated file paths to shortened data versions
     parser.add_argument("--sst_train", type=str,
-                        default="data/ids-sst-train.csv")
-    parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
+                        default=f"data/{size}/ids-sst-train.csv")
+    parser.add_argument("--sst_dev", type=str, default=f"data/{size}/ids-sst-dev.csv")
     parser.add_argument("--sst_test", type=str,
-                        default="data/ids-sst-test-student.csv")
+                        default=f"data/{size}/ids-sst-test-student.csv")
 
     parser.add_argument("--para_train", type=str,
-                        default="data/quora-train.csv")
-    parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
+                        default=f"data/{size}/quora-train.csv")
+    parser.add_argument("--para_dev", type=str, default=f"data/{size}/quora-dev.csv")
     parser.add_argument("--para_test", type=str,
-                        default="data/quora-test-student.csv")
+                        default=f"data/{size}/quora-test-student.csv")
 
-    parser.add_argument("--sts_train", type=str, default="data/sts-train.csv")
-    parser.add_argument("--sts_dev", type=str, default="data/sts-dev.csv")
+    parser.add_argument("--sts_train", type=str, default=f"data/{size}/sts-train.csv")
+    parser.add_argument("--sts_dev", type=str, default=f"data/{size}/sts-dev.csv")
     parser.add_argument("--sts_test", type=str,
-                        default="data/sts-test-student.csv")
+                        default=f"data/{size}/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="pretrain")
     parser.add_argument("--use_gpu", action='store_true')
 
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
     parser.add_argument("--sst_dev_out", type=str,
-                        default="predictions/sst-dev-output.csv")
+                    default=f"predictions/sst-dev-output-{current_datetime}.csv")
     parser.add_argument("--sst_test_out", type=str,
-                        default="predictions/sst-test-output.csv")
+                        default=f"predictions/sst-test-output-{current_datetime}.csv")
 
     parser.add_argument("--para_dev_out", type=str,
-                        default="predictions/para-dev-output.csv")
+                        default=f"predictions/para-dev-output-{current_datetime}.csv")
     parser.add_argument("--para_test_out", type=str,
-                        default="predictions/para-test-output.csv")
+                        default=f"predictions/para-test-output-{current_datetime}.csv")
 
     parser.add_argument("--sts_dev_out", type=str,
-                        default="predictions/sts-dev-output.csv")
+                        default=f"predictions/sts-dev-output-{current_datetime}.csv")
     parser.add_argument("--sts_test_out", type=str,
-                        default="predictions/sts-test-output.csv")
+                        default=f"predictions/sts-test-output-{current_datetime}.csv")
 
     parser.add_argument(
         "--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
@@ -473,7 +546,10 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     # Save path.
-    args.filepath = f'{args.option}-{args.epochs}-{args.lr}-multitask.pt'
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    args.filepath = f'models/{args.option}-{args.epochs}-{args.lr}-{current_datetime}-multitask.pt'
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
-    test_multitask(args)
+    train_all(args)
+    test_all(args)
+
+

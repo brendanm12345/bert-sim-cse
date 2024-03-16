@@ -1,3 +1,5 @@
 sst-classifier.pt
 cfimdb-classifier.pt
 pretrain-10-0.001-multitask.pt
+data/big/
+models/
