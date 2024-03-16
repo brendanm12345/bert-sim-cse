@@ -74,7 +74,6 @@ class MultitaskBERT(nn.Module):
             elif config.option == 'finetune':
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
-        # TODO Added code here
         self.sentiment_classifier = nn.Linear(
             BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
         # * 2 for concat sentence embeddings
@@ -90,7 +89,6 @@ class MultitaskBERT(nn.Module):
         # Here, you can start by just returning the embeddings straight from BERT.
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
-        # TODO Added code here
         outputs = self.bert(input_ids, attention_mask)
 
         # (maybe) get the hidden state of the [CLS] token
@@ -120,7 +118,6 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        # TODO Added code here
         embeddings_1 = self.forward(input_ids_1, attention_mask_1)
         embeddings_2 = self.forward(input_ids_2, attention_mask_2)
         embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
@@ -134,7 +131,6 @@ class MultitaskBERT(nn.Module):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
-        # TODO Add code here
         embeddings_1 = self.forward(input_ids_1, attention_mask_1)
         embeddings_2 = self.forward(input_ids_2, attention_mask_2)
         embeddings = torch.cat((embeddings_1, embeddings_2), dim=1)
@@ -212,7 +208,6 @@ def train_multitask(x):
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
 
-    # Added
     best_dev_sentiment_accuracy = 0
     best_dev_paraphrase_accuracy = 0
     best_dev_sts_corr = -1

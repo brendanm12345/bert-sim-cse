@@ -1,3 +1,7 @@
+'''
+Multitask with SimCSE-style contrastive learning BERT class
+'''
+
 import random
 import numpy as np
 import argparse
@@ -209,16 +213,13 @@ def train_all(args):
     sts_dev_dataloader = DataLoader(
         sts_dev_data, shuffle=True, batch_size=args.batch_size, collate_fn=sts_train_data.collate_fn)
 
-     # SIMCSE: Load SimCSE training data
     if args.simcse:
         contrastive_train_data = SimCSEDataset(args.simcse_train, args)    
         contrastive_loss_fn = ContrastiveLoss().to(device)
 
-        # SIMCSE: Create DataLoader for SimCSE training data
         contrastive_train_dataloader = DataLoader(
             contrastive_train_data, shuffle=True, batch_size=args.batch_size, collate_fn=contrastive_train_data.collate_fn)
 
-    # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
               'num_labels': num_labels,
               'hidden_size': 768,
@@ -233,7 +234,6 @@ def train_all(args):
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
 
-    # Added
     best_dev_sentiment_accuracy = 0
     best_dev_paraphrase_accuracy = 0
     best_dev_sts_corr = -1
@@ -247,7 +247,7 @@ def train_all(args):
         sst_iter = iter(sst_train_dataloader)
         para_iter = iter(para_train_dataloader)
         sts_iter = iter(sts_train_dataloader)
-        # SIMCSE
+
         if args.simcse:
             contrastive_iter = iter(contrastive_train_dataloader)
         
@@ -268,14 +268,14 @@ def train_all(args):
                     input_ids, attention_mask = simcse_batch['input_ids'].to(
                         device), simcse_batch['attention_mask'].to(device)
                     optimizer.zero_grad()
-                    # Forward pass through the model to get two sets of embeddings
+                    # forward pass through the model to get two sets of embeddings
                     pooled_output_first, pooled_output_second = model(
                         input_ids=input_ids, attention_mask=attention_mask, simcse=True)
                     
-                    # Concatenate the embeddings from the two passes to form a single batch
+                    # concatenate the embeddings from the two passes to form a single batch
                     embeddings = torch.cat((pooled_output_first, pooled_output_second), dim=0)
 
-                    # Calculate contrastive loss
+                    # calculate contrastive loss
                     loss = contrastive_loss_fn(embeddings)
                     loss.backward()
                     optimizer.step()

@@ -337,7 +337,6 @@ def load_multitask_and_simcse_data(sentiment_filename, paraphrase_filename, simi
     print(
         f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
 
-    # Logic to load the SimCSE dataset for unsupervised learning
     simcse_data = []
     with open(simcse_filename, 'r', encoding='utf-8') as fp:
         for record in csv.DictReader(fp, delimiter='\t'):

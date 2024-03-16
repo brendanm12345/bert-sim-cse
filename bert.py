@@ -51,28 +51,27 @@ class BertSelfAttention(nn.Module):
         # - Multiply the attention scores with the value to get back weighted values.
         # - Before returning, concatenate multi-heads to recover the original shape:
         #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
-        # TODO: Added code here
 
         dk = self.attention_head_size
 
-        # Calculate QK^T / √dk (swap / transpose the last two dimentions of key)
+        # calculate QK^T / √dk (swap / transpose the last two dimentions of key)
         scores = torch.matmul(query, key.transpose(-2, -1)) / \
             torch.sqrt(torch.tensor(dk, dtype=query.dtype))
 
-        # See if we need to apply the attention mask to the scores
+        # see if we need to apply the attention mask to the scores
         if attention_mask is not None:
             scores = scores + attention_mask
 
-        # Normalize the scores with softmax.
+        # normalize the scores with softmax.
         attn_scores = F.softmax(scores, dim=-1)
 
-        # Apply dropout to the normalized attention scores.
+        # apply dropout to the normalized attention scores.
         attn_scores = self.dropout(attn_scores)
 
-        # Multiply the attention scores with the value to get back weighted values.
+        # multiply the attention scores with the value to get back weighted values.
         context_layer = torch.matmul(attn_scores, value)
 
-        # Concatenate multi-heads to recover the original shape.
+        # concatenate multi-heads to recover the original shape.
         # [bs, seq_len, num_attention_heads, attention_head_size]
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[
@@ -93,7 +92,7 @@ class BertSelfAttention(nn.Module):
         key_layer = self.transform(hidden_states, self.key)
         value_layer = self.transform(hidden_states, self.value)
         query_layer = self.transform(hidden_states, self.query)
-        # Calculate the multi-head attention.
+        # calculate the multi-head attention.
         attn_value = self.attention(
             key_layer, query_layer, value_layer, attention_mask)
         return attn_value
@@ -130,18 +129,10 @@ class BertLayer(nn.Module):
         dropout: the dropout to be applied 
         ln_layer: the layer norm to be applied
         """
-        # TODO: Added code here
 
-        # apply the dense layer to output
         output_transformed = dense_layer(output)
-
-        # apply dropout to transformed output
         output_dropout = dropout(output_transformed)
-
-        # add the dropout output to the original input (residual connection)
         output_residual = input + output_dropout
-
-        # apply layer norm to the output
         output_norm = ln_layer(output_residual)
 
         return output_norm
@@ -156,7 +147,6 @@ class BertLayer(nn.Module):
         3. A feed forward layer.
         4. An add-norm operation that takes the input and output of the feed forward layer.
         """
-        # TODO: Added code here
 
         # mulit-head attention layer
         attnetion_output = self.self_attention(hidden_states, attention_mask)
@@ -221,8 +211,6 @@ class BertModel(BertPreTrainedModel):
     def embed(self, input_ids):
         input_shape = input_ids.size()
         seq_length = input_shape[1]
-
-        # TODO: Added code here
 
         # get word embedding from self.word_embedding into input_embeds
         inputs_embeds = self.word_embedding(input_ids)
