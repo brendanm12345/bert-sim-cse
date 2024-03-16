@@ -50,34 +50,24 @@ class ContrastiveLoss(nn.Module):
         self.temperature = temperature
 
     def forward(self, embeddings):
-        # Normalize the embeddings to have unit length
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
-        # Calculate cosine similarity matrix (size: batch_size x batch_size)
         similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
         
-        # For numerical stability, subtract the maximum value in each row
         max_vals = torch.max(similarity_matrix, dim=1, keepdim=True)[0]
         similarity_matrix = similarity_matrix - max_vals.detach()
         
-        # The diagonal entries are the similarities between each embedding and itself
-        # We want to exclude these when calculating the denominator in softmax
         logits_mask = torch.eye(similarity_matrix.size(0)).bool().to(embeddings.device)
         similarity_matrix.masked_fill_(logits_mask, float('-inf'))
         
-        # Calculate softmax along each row, but exclude the diagonal (self-similarity)
         softmax_scores = F.softmax(similarity_matrix, dim=1)
         
-        # The targets are the positions of the positive examples in the softmax_scores matrix
-        # For unsupervised SimCSE, the positive example for each anchor is its pair (next in sequence)
         targets = torch.arange(embeddings.size(0)).to(embeddings.device)
         if embeddings.size(0) % 2 == 0:  # Assuming even batch size for simplicity
             targets = (targets + 1) - 2 * (targets % 2)
         
-        # Calculate the log likelihood of the positive examples
         log_probs = torch.log(torch.gather(softmax_scores, 1, targets.unsqueeze(1)).squeeze(1))
         
-        # The loss is the negative log likelihood averaged across the batch
         loss = -log_probs.mean()
         return loss
 
@@ -94,53 +84,33 @@ class GaussianDropout(nn.Module):
             return x + noise
         return x
 
-
 class MultitaskBERT(nn.Module):
-    '''
-    This module should use BERT for 3 tasks:
-
-    - Sentiment classification (predict_sentiment)
-    - Paraphrase detection (predict_paraphrase)
-    - Semantic Textual Similarity (predict_similarity)
-    '''
 
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
         self.bert = BertModel.from_pretrained('bert-base-uncased')
-        # Pretrain mode does not require updating BERT paramters.
         for param in self.bert.parameters():
             if config.option == 'pretrain':
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
 
-        self.sentiment_classifier = nn.Linear(
-            BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
-        # * 2 for concat sentence embeddings
+        self.sentiment_classifier = nn.Linear(BERT_HIDDEN_SIZE, N_SENTIMENT_CLASSES)
         self.paraphrase_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
-        # * 2 for concat sentence embeddings
         self.similarity_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
         self.gaussian_dropout = GaussianDropout(config.hidden_dropout_prob)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-        # SIMCSE: Added code
         self.simcse = False
         self.contrastive_classifier = nn.Linear(BERT_HIDDEN_SIZE * 2, 1)
 
-    # SIMCSE: Updated this function
     def forward(self, input_ids, attention_mask, simcse=False):
-        # Process input through BERT - sentence data ids gets turned to embeddings
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         if simcse:
-            # For SimCSE, apply dropout twice to get two embeddings for the same input
-                       # Get pooler output
             pooler_output = outputs["pooler_output"]
-            # Clone the pooler_output before applying dropout to ensure different dropout masks
             pooler_output_clone = pooler_output.clone()
-            # Apply dropout first time
             pooled_output_first = self.gaussian_dropout(pooler_output)
-            # Apply dropout second time to the cloned output
             pooled_output_second = self.gaussian_dropout(pooler_output_clone)
 
             return pooled_output_first, pooled_output_second
@@ -515,7 +485,7 @@ def test_all(args):
 def get_args():
     parser = argparse.ArgumentParser()
 
-    size = "big"
+    size = "small"
 
     parser.add_argument("--simcse", action="store_true", help="Include SimCSE training")
 
@@ -581,4 +551,5 @@ if __name__ == "__main__":
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     train_all(args)
     test_all(args)
+
 
